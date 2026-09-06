@@ -879,8 +879,15 @@ function signInAndWait(){
 // 一度サンプルを入れた（または既にレッスンがある）ことを記録しておき、
 // レッスンを全部削除した後に再度サンプルが復活してしまわないようにしています。
 async function ensureSeedDataIfNeeded(){
-  // 体験版は空の状態から開始します。
-  return;
+  // 体験版を初めて開いた端末では、使い方が分かるサンプルを1件だけ表示します。
+  // 既に入力データがある端末には追加しません。
+  const snap = await lessonsCollection.get();
+  if(!snap.empty) return;
+  const samples = seedData();
+  for(const lesson of samples){
+    const { id, ...data } = lesson;
+    await lessonsCollection.doc(id).set(data);
+  }
 }
 
 function subscribeToFirestore(){
@@ -953,39 +960,20 @@ async function persist(lessonId){
 function seedData(){
   return [
     {
-      id: uid(),
-      date: '2026-08-02',
-      content: 'ソレア - 中級クラス',
-      numero: 'ソレア',
-      youtubeUrl: 'https://youtu.be/example1',
+      id: 'sample-lesson',
+      date: '2026-09-06',
+      content: 'サンプルレッスン　動画を見ながら復習',
+      numero: 'ブレリア',
+      youtubeUrl: 'https://www.youtube.com/watch?v=M7lc1UVf-VE',
       chapters: [
-        {id: uid(), time:'0:00', label:'ウォームアップ・パルマ'},
-        {id: uid(), time:'12:30', label:'ソレア振り付け 前半'},
-        {id: uid(), time:'25:10', label:'先生からの注意点まとめ'}
+        {id: 'sample-chapter-1', time:'0:00', label:'最初から見る'},
+        {id: 'sample-chapter-2', time:'0:30', label:'ここから復習'},
+        {id: 'sample-chapter-3', time:'1:00', label:'もう一度確認したいところ'}
       ],
       issues: [
-        {id: uid(), text:'ブラソ（腕の動き）がまだ硬い', resolved:false},
-        {id: uid(), text:'サパテアードのリズムが走る', resolved:true}
+        {id: 'sample-issue-1', text:'足と手のタイミングを確認する', resolved:false}
       ],
-      nextGoals: '次回までにサパテアードのリズムを安定させる。鏡の前でブラソだけ練習。',
-      practiceLog: [
-        {id: uid(), date:'2026-08-03', note:'ブラソだけ鏡の前で15分練習'}
-      ]
-    },
-    {
-      id: uid(),
-      date: '2026-08-05',
-      content: 'タンゴ - 初級クラス',
-      numero: 'タンゴ',
-      youtubeUrl: 'https://youtu.be/example2',
-      chapters: [
-        {id: uid(), time:'0:00', label:'コンパスの数え方'},
-        {id: uid(), time:'8:45', label:'タンゴ基本ステップ'}
-      ],
-      issues: [
-        {id: uid(), text:'コンパス（拍）の数え方を体で覚える', resolved:false}
-      ],
-      nextGoals: '手拍子なしでも8拍を体で感じられるようにする。',
+      nextGoals: '動画のチャプターを使って、気になる部分を繰り返し確認する。',
       practiceLog: []
     }
   ];
