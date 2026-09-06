@@ -219,6 +219,22 @@
   .btn-solid-red{background:linear-gradient(90deg, var(--accent-rose), var(--accent-bordeaux)); color:#fff;}
   .btn-danger-text{background:transparent; color:var(--danger); border:none; text-decoration:underline; padding:6px 4px;}
 
+  /* YouTube: Paso Note内で再生し、外部アプリ確認を減らす */
+  .pn-youtube-player{
+    width:100%;
+    aspect-ratio:16/9;
+    border:0;
+    border-radius:12px;
+    background:#000;
+    display:block;
+    margin-top:8px;
+  }
+  .pn-youtube-note{
+    margin-top:6px;
+    font-size:11.5px;
+    color:var(--text-muted);
+  }
+
   /* Lesson cards */
   .lesson-card{
     background:var(--surface);
@@ -1019,6 +1035,27 @@ function buildYoutubeLink(url, time){
   return sec>0 ? `${url}${sep}t=${sec}s` : url;
 }
 
+function youtubeVideoId(url){
+  if(!url) return '';
+  try{
+    const u = new URL(url);
+    if(u.hostname.includes('youtu.be')) return u.pathname.split('/').filter(Boolean)[0] || '';
+    if(u.pathname.startsWith('/shorts/')) return u.pathname.split('/')[2] || '';
+    if(u.pathname.startsWith('/embed/')) return u.pathname.split('/')[2] || '';
+    return u.searchParams.get('v') || '';
+  }catch(e){
+    const m = String(url).match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/))([A-Za-z0-9_-]{6,})/);
+    return m ? m[1] : '';
+  }
+}
+
+function buildYoutubeEmbedUrl(url, time){
+  const id = youtubeVideoId(url);
+  if(!id) return '';
+  const sec = timeToSeconds(time);
+  return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?playsinline=1&rel=0${sec>0 ? `&start=${sec}&autoplay=1` : ''}`;
+}
+
 function escapeHtml(str){
   return (str||'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
@@ -1185,7 +1222,10 @@ function renderLessonBody(l, chapters, issues, logs){
     ${l.youtubeUrl ? `
     <div class="section">
       <div class="section-label">動画</div>
-      <a class="yt-link" href="${escapeHtml(l.youtubeUrl)}" target="_blank" rel="noopener">▶ YouTubeで開く</a>
+      ${buildYoutubeEmbedUrl(l.youtubeUrl, '')
+        ? `<iframe id="youtubePlayer-${l.id}" class="pn-youtube-player" src="${escapeHtml(buildYoutubeEmbedUrl(l.youtubeUrl, ''))}" title="YouTube動画" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+           <div class="pn-youtube-note">Paso Noteの中で再生できます。下のチャプターをタップすると、その位置から再生します。</div>`
+        : `<a class="yt-link" href="${escapeHtml(l.youtubeUrl)}" target="_blank" rel="noopener">▶ YouTubeで開く</a>`}
     </div>` : ''}
 
     <div class="section">
@@ -1267,6 +1307,13 @@ function openChapter(lessonId, chapterId){
   const l = findLesson(lessonId);
   const c = (l.chapters||[]).find(c=>c.id===chapterId);
   if(!l.youtubeUrl){ showToast('この レッスンには動画リンクがありません'); return; }
+  const embed = buildYoutubeEmbedUrl(l.youtubeUrl, c.time);
+  const player = $(`youtubePlayer-${lessonId}`);
+  if(embed && player){
+    player.src = embed;
+    player.scrollIntoView({behavior:'smooth', block:'center'});
+    return;
+  }
   const link = buildYoutubeLink(l.youtubeUrl, c.time);
   window.open(link, '_blank');
 }
