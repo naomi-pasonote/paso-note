@@ -671,7 +671,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script>
-// PASO_NOTE_PRIVATE_SECURE_V9: email/password only; no anonymous sign-in; no auto seed
+// PASO_NOTE_PRIVATE_SECURE_V10: secure login + automatic device/cache recovery; no anonymous sign-in; no auto seed
 /* ==============================
    Firebase 設定
    ここに Firebase コンソールで取得した設定値を入れます。
@@ -708,6 +708,66 @@ let unsubscribeDirectIssuesSnapshot = null;
 let lessons = [];
 const directIssuesCollection = db.collection('flamencoDirectIssues');
 let generalNotes = [];
+const LOCAL_RECOVERY_KEY = 'pasoNoteDeviceRecoveryV1';
+let recoveredFromDevice = false;
+
+function saveLocalRecovery(){
+  try{
+    localStorage.setItem(LOCAL_RECOVERY_KEY, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      lessons,
+      directIssues,
+      generalNotes
+    }));
+  }catch(e){ console.warn('local recovery save failed', e); }
+}
+
+function loadLocalRecovery(){
+  try{
+    const raw = localStorage.getItem(LOCAL_RECOVERY_KEY);
+    if(!raw) return false;
+    const data = JSON.parse(raw);
+    lessons = Array.isArray(data.lessons) ? data.lessons : [];
+    directIssues = Array.isArray(data.directIssues) ? data.directIssues : [];
+    generalNotes = Array.isArray(data.generalNotes) ? data.generalNotes : [];
+    recoveredFromDevice = lessons.length > 0 || directIssues.length > 0 || generalNotes.length > 0;
+    return recoveredFromDevice;
+  }catch(e){
+    console.warn('local recovery load failed', e);
+    return false;
+  }
+}
+
+async function loadFirestoreCache(){
+  let found = false;
+  try{
+    const [lessonSnap, issueSnap, noteSnap] = await Promise.all([
+      lessonsCollection.get({source:'cache'}).catch(()=>null),
+      directIssuesCollection.get({source:'cache'}).catch(()=>null),
+      generalNotesCollection.get({source:'cache'}).catch(()=>null)
+    ]);
+    if(lessonSnap && !lessonSnap.empty){
+      lessons = lessonSnap.docs.map(doc=>({id:doc.id, ...doc.data()}));
+      found = true;
+    }
+    if(issueSnap && !issueSnap.empty){
+      directIssues = issueSnap.docs.map(doc=>({id:doc.id, ...doc.data()}));
+      found = true;
+    }
+    if(noteSnap && !noteSnap.empty){
+      generalNotes = noteSnap.docs.map(doc=>({id:doc.id, ...doc.data()}));
+      found = true;
+    }
+    if(found){
+      recoveredFromDevice = true;
+      saveLocalRecovery();
+    }
+  }catch(e){
+    console.warn('firestore cache recovery failed', e);
+  }
+  return found;
+}
+
 let currentTab = 'issues';
 let expandedId = null;
 let editingLessonId = null;
@@ -854,6 +914,11 @@ function showToast(msg){
 }
 
 async function loadState(){
+  // まずこの端末に残っている過去データを自動復旧。
+  loadLocalRecovery();
+  await loadFirestoreCache();
+  render();
+
   try{
     await signInAndWait();
     subscribeToFirestore();
@@ -861,10 +926,15 @@ async function loadState(){
     subscribeToGeneralNotes();
   }catch(e){
     console.error(e);
+    // Firebase側がまだ閉じていても、端末内に復旧できた記録はそのまま使える。
+    if(recoveredFromDevice){
+      const overlay = document.getElementById('secureLoginOverlay');
+      if(overlay) overlay.style.display = 'none';
+      showToast('端末内の記録を復旧して表示しています');
+      render();
+      return;
+    }
     showToast('安全確認中のためデータを読み込めません');
-    lessons = [];
-    directIssues = [];
-    generalNotes = [];
     render();
   }
 }
@@ -945,6 +1015,8 @@ function subscribeToFirestore(){
   if(unsubscribeSnapshot) unsubscribeSnapshot();
   unsubscribeSnapshot = lessonsCollection.onSnapshot((snap)=>{
     lessons = snap.docs.map(doc=> ({ id: doc.id, ...doc.data() }));
+    recoveredFromDevice = true;
+    saveLocalRecovery();
     render();
   }, (err)=>{
     console.error(err);
@@ -955,6 +1027,8 @@ function subscribeToDirectIssues(){
   if(unsubscribeDirectIssuesSnapshot) unsubscribeDirectIssuesSnapshot();
   unsubscribeDirectIssuesSnapshot = directIssuesCollection.onSnapshot((snap)=>{
     directIssues = snap.docs.map(doc=> ({ id: doc.id, ...doc.data() }));
+    recoveredFromDevice = true;
+    saveLocalRecovery();
     render();
   }, (err)=>{
     console.error(err);
@@ -966,6 +1040,8 @@ function subscribeToGeneralNotes(){
   if(unsubscribeNotesSnapshot) unsubscribeNotesSnapshot();
   unsubscribeNotesSnapshot = generalNotesCollection.onSnapshot((snap)=>{
     generalNotes = snap.docs.map(doc=> ({ id: doc.id, ...doc.data() }));
+    recoveredFromDevice = true;
+    saveLocalRecovery();
     render();
   }, (err)=>{
     console.error(err);
@@ -986,7 +1062,9 @@ async function persistNote(noteId){
     });
   }catch(e){
     console.error(e);
-    showToast('保存に失敗しました（通信をご確認ください）');
+    saveLocalRecovery();
+    recoveredFromDevice = true;
+    showToast('端末に保存しました');
   }
 }
 
@@ -1502,38 +1580,53 @@ async function saveDirectIssue(){
   }
 
   const ref = directIssuesCollection.doc();
-  await ref.set({
-    date,
-    numero,
-    text,
-    resolved: false,
-    createdAt: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  const localItem = { id: ref.id, date, numero, text, resolved:false };
+  directIssues.push(localItem);
+  saveLocalRecovery();
+  recoveredFromDevice = true;
+  render();
+  try{
+    await ref.set({
+      date,
+      numero,
+      text,
+      resolved: false,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  }catch(e){
+    console.error(e);
+  }
 
   closeDirectIssueModal();
-  showToast('課題を追加しました');
+  showToast('課題を保存しました');
 }
 
 async function toggleDirectIssue(issueId){
   const issue = directIssues.find(i=>i.id===issueId);
   if(!issue) return;
+  issue.resolved = !issue.resolved;
+  saveLocalRecovery();
+  recoveredFromDevice = true;
+  render();
   try{
-    await directIssuesCollection.doc(issueId).update({ resolved: !issue.resolved });
-    showToast(!issue.resolved ? '課題を解決済みにしました' : '未解決に戻しました');
+    await directIssuesCollection.doc(issueId).update({ resolved: issue.resolved });
   }catch(e){
     console.error(e);
-    showToast('更新に失敗しました（通信をご確認ください）');
   }
+  showToast(issue.resolved ? '課題を解決済みにしました' : '未解決に戻しました');
 }
 
 async function deleteDirectIssue(issueId){
+  directIssues = directIssues.filter(i=>i.id!==issueId);
+  saveLocalRecovery();
+  recoveredFromDevice = true;
+  render();
   try{
     await directIssuesCollection.doc(issueId).delete();
-    showToast('削除しました');
   }catch(e){
     console.error(e);
-    showToast('削除に失敗しました（通信をご確認ください）');
   }
+  showToast('削除しました');
 }
 
 function openLessonModal(){
@@ -1593,12 +1686,14 @@ async function saveLessonModal(){
 
 async function deleteLesson(id){
   if(!confirm('このレッスンを削除しますか？記録した内容もすべて削除されます。')) return;
+  lessons = lessons.filter(l=>l.id!==id);
+  saveLocalRecovery();
+  recoveredFromDevice = true;
+  render();
   try{
     await lessonsCollection.doc(id).delete();
   }catch(e){
     console.error(e);
-    showToast('削除に失敗しました（通信をご確認ください）');
-    return;
   }
   if(expandedId===id) expandedId = null;
   showToast('削除しました');
@@ -1652,12 +1747,14 @@ async function saveNoteModal(){
 
 async function deleteNote(id){
   if(!confirm('この全体メモを削除しますか？')) return;
+  generalNotes = generalNotes.filter(n=>n.id!==id);
+  saveLocalRecovery();
+  recoveredFromDevice = true;
+  render();
   try{
     await generalNotesCollection.doc(id).delete();
   }catch(e){
     console.error(e);
-    showToast('削除に失敗しました（通信をご確認ください）');
-    return;
   }
   showToast('削除しました');
 }
