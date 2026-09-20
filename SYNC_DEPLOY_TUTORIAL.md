@@ -9,7 +9,7 @@ Hosting は変更しないため、「朝じたく」の画面や公開先には
 
 下のコマンドを Cloud Shell に貼り付けて実行してください。
 
-```bash
+```sh
 bash deploy-firestore-rules.sh
 ```
 
