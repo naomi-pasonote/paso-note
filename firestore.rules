@@ -1,0 +1,59 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isPasswordUser() {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider == 'password';
+    }
+
+    function hasOwnerMarker() {
+      return isPasswordUser()
+        && (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          || exists(/databases/$(database)/documents/users/$(request.auth.uid)/settings/main)
+        );
+    }
+
+    function isOwner() {
+      return hasOwnerMarker();
+    }
+
+    // おでかけ安心: 本人UID配下だけ。新規アカウントはowner markerを作れない。
+    match /users/{userId} {
+      allow read, update: if isOwner() && request.auth.uid == userId;
+      allow create, delete: if false;
+
+      match /{document=**} {
+        allow read, write: if isOwner() && request.auth.uid == userId;
+      }
+    }
+
+    // Paso Note: 本人だけが既存の共通コレクションを利用できる。
+    match /flamencoLessons/{docId} {
+      allow read, write: if isOwner();
+    }
+
+    match /flamencoGeneralNotes/{docId} {
+      allow read, write: if isOwner();
+    }
+
+    match /flamencoDirectIssues/{docId} {
+      allow read, write: if isOwner();
+    }
+
+    match /flamencoMeta/{docId} {
+      allow read, write: if isOwner();
+    }
+
+    // 旧データ互換用。
+    match /flamencoNote/{docId} {
+      allow read, write: if isOwner();
+    }
+
+    // 上記以外はすべて拒否。
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
