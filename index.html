@@ -709,10 +709,13 @@ let lessons = [];
 const directIssuesCollection = db.collection('flamencoDirectIssues');
 let generalNotes = [];
 const LOCAL_RECOVERY_KEY = 'pasoNoteDeviceRecoveryV1';
+const LOCAL_RECOVERY_BACKUP_KEY = 'pasoNoteDeviceRecoveryBackupV1';
 let recoveredFromDevice = false;
 
 function saveLocalRecovery(){
   try{
+    const previous = localStorage.getItem(LOCAL_RECOVERY_KEY);
+    if(previous) localStorage.setItem(LOCAL_RECOVERY_BACKUP_KEY, previous);
     localStorage.setItem(LOCAL_RECOVERY_KEY, JSON.stringify({
       savedAt: new Date().toISOString(),
       lessons,
@@ -724,7 +727,7 @@ function saveLocalRecovery(){
 
 function loadLocalRecovery(){
   try{
-    const raw = localStorage.getItem(LOCAL_RECOVERY_KEY);
+    const raw = localStorage.getItem(LOCAL_RECOVERY_KEY) || localStorage.getItem(LOCAL_RECOVERY_BACKUP_KEY);
     if(!raw) return false;
     const data = JSON.parse(raw);
     lessons = Array.isArray(data.lessons) ? data.lessons : [];
@@ -914,81 +917,15 @@ function showToast(msg){
 }
 
 async function loadState(){
-  // まずこの端末に残っている過去データを自動復旧。
+  // Firestore は安全確認のため閉じたまま。今はこの端末だけで安全に使う。
   loadLocalRecovery();
   await loadFirestoreCache();
+
+  const overlay = document.getElementById('secureLoginOverlay');
+  if(overlay) overlay.style.display = 'none';
+
+  if(recoveredFromDevice) saveLocalRecovery();
   render();
-
-  try{
-    await signInAndWait();
-    subscribeToFirestore();
-    subscribeToDirectIssues();
-    subscribeToGeneralNotes();
-  }catch(e){
-    console.error(e);
-    // Firebase側がまだ閉じていても、端末内に復旧できた記録はそのまま使える。
-    if(recoveredFromDevice){
-      const overlay = document.getElementById('secureLoginOverlay');
-      if(overlay) overlay.style.display = 'none';
-      showToast('端末内の記録を復旧して表示しています');
-      render();
-      return;
-    }
-    showToast('安全確認中のためデータを読み込めません');
-    render();
-  }
-}
-
-function signInAndWait(){
-  return new Promise((resolve, reject)=>{
-    const overlay = document.getElementById('secureLoginOverlay');
-    const emailEl = document.getElementById('secureEmail');
-    const passwordEl = document.getElementById('securePassword');
-    const btn = document.getElementById('secureLoginBtn');
-    const err = document.getElementById('secureLoginError');
-    let resolved = false;
-
-    const showLogin = () => { if (overlay) overlay.style.display = 'flex'; };
-    const hideLogin = () => { if (overlay) overlay.style.display = 'none'; };
-
-    auth.onAuthStateChanged(async user=>{
-      if(user && !user.isAnonymous){
-        hideLogin();
-        if(!resolved){ resolved = true; resolve(user); }
-        return;
-      }
-      if(user && user.isAnonymous){
-        try { await auth.signOut(); } catch(_) {}
-      }
-      showLogin();
-    }, reject);
-
-    async function doLogin(){
-      const email = (emailEl?.value || '').trim();
-      const password = passwordEl?.value || '';
-      if(!email || !password){
-        err.textContent = 'メールアドレスとパスワードを入力してください。';
-        return;
-      }
-      btn.disabled = true;
-      err.textContent = '';
-      try{
-        const cred = await auth.signInWithEmailAndPassword(email, password);
-        if(cred.user?.isAnonymous){
-          await auth.signOut();
-          throw new Error('anonymous-not-allowed');
-        }
-      }catch(e){
-        console.error(e);
-        err.textContent = 'ログインできませんでした。メールアドレスとパスワードをご確認ください。';
-      }finally{
-        btn.disabled = false;
-      }
-    }
-
-    btn.addEventListener('click', doLogin);
-    passwordEl.addEventListener('keydown', e=>{ if(e.key === 'Enter') doLogin(); });
-  });
 }
 
 // アプリを初めて開いた時（データが1件もない時）だけ、サンプルのレッスンを2件登録します。
@@ -1054,35 +991,16 @@ async function persistNote(noteId){
   if(!noteId) return;
   const n = generalNotes.find(x=>x.id===noteId);
   if(!n) return;
-  try{
-    const { id, ...data } = n;
-    await generalNotesCollection.doc(noteId).set({
-      ...data,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-  }catch(e){
-    console.error(e);
-    saveLocalRecovery();
-    recoveredFromDevice = true;
-    showToast('端末に保存しました');
-  }
+  recoveredFromDevice = true;
+  saveLocalRecovery();
 }
 
-// 指定したレッスン（lessonId）の現在の内容を、そのレッスン専用のドキュメントに保存します。
 async function persist(lessonId){
   if(!lessonId) return;
   const l = findLesson(lessonId);
   if(!l) return;
-  try{
-    const { id, ...data } = l;
-    await lessonsCollection.doc(lessonId).set({
-      ...data,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-  }catch(e){
-    console.error(e);
-    showToast('保存に失敗しました（通信をご確認ください）');
-  }
+  recoveredFromDevice = true;
+  saveLocalRecovery();
 }
 
 
@@ -1585,18 +1503,6 @@ async function saveDirectIssue(){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
-  try{
-    await ref.set({
-      date,
-      numero,
-      text,
-      resolved: false,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-  }catch(e){
-    console.error(e);
-  }
-
   closeDirectIssueModal();
   showToast('課題を保存しました');
 }
@@ -1608,11 +1514,6 @@ async function toggleDirectIssue(issueId){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
-  try{
-    await directIssuesCollection.doc(issueId).update({ resolved: issue.resolved });
-  }catch(e){
-    console.error(e);
-  }
   showToast(issue.resolved ? '課題を解決済みにしました' : '未解決に戻しました');
 }
 
@@ -1621,11 +1522,6 @@ async function deleteDirectIssue(issueId){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
-  try{
-    await directIssuesCollection.doc(issueId).delete();
-  }catch(e){
-    console.error(e);
-  }
   showToast('削除しました');
 }
 
@@ -1690,11 +1586,6 @@ async function deleteLesson(id){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
-  try{
-    await lessonsCollection.doc(id).delete();
-  }catch(e){
-    console.error(e);
-  }
   if(expandedId===id) expandedId = null;
   showToast('削除しました');
 }
@@ -1751,11 +1642,6 @@ async function deleteNote(id){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
-  try{
-    await generalNotesCollection.doc(id).delete();
-  }catch(e){
-    console.error(e);
-  }
   showToast('削除しました');
 }
 
