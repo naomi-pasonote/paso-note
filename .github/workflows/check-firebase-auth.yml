@@ -1,0 +1,20 @@
+name: Check Firebase restore auth
+
+on:
+  push:
+    paths:
+      - ".github/workflows/check-firebase-auth.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check available Firebase credentials
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_SA_PROJECT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_NAOMI_15BEC }}
+          FIREBASE_SA_GENERIC: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -n "$FIREBASE_TOKEN" ]; then echo "FIREBASE_TOKEN=present"; else echo "FIREBASE_TOKEN=missing"; fi
+          if [ -n "$FIREBASE_SA_PROJECT" ]; then echo "PROJECT_SA=present"; else echo "PROJECT_SA=missing"; fi
+          if [ -n "$FIREBASE_SA_GENERIC" ]; then echo "GENERIC_SA=present"; else echo "GENERIC_SA=missing"; fi
