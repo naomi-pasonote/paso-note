@@ -711,6 +711,135 @@ let generalNotes = [];
 const LOCAL_RECOVERY_KEY = 'pasoNoteDeviceRecoveryV1';
 const LOCAL_RECOVERY_BACKUP_KEY = 'pasoNoteDeviceRecoveryBackupV1';
 let recoveredFromDevice = false;
+let cloudSyncEnabled = false;
+let cloudSyncStarting = false;
+
+function cloudPayload(item){
+  const { id, updatedAt, createdAt, ...data } = item || {};
+  return data;
+}
+
+async function mergeLocalIntoCloud(collection, localItems, remoteSnap){
+  const remoteItems = remoteSnap.docs.map(doc=>({ id: doc.id, ...doc.data() }));
+  const remoteIds = new Set(remoteItems.map(x=>x.id));
+  const missing = (localItems || []).filter(x=>x && x.id && !remoteIds.has(x.id));
+
+  for(const item of missing){
+    await collection.doc(item.id).set({
+      ...cloudPayload(item),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  }
+
+  return [...remoteItems, ...missing];
+}
+
+async function startCloudSync(user){
+  if(!user || user.isAnonymous || cloudSyncEnabled || cloudSyncStarting) return false;
+  cloudSyncStarting = true;
+  try{
+    const [lessonSnap, issueSnap, noteSnap] = await Promise.all([
+      lessonsCollection.get(),
+      directIssuesCollection.get(),
+      generalNotesCollection.get()
+    ]);
+
+    // クラウド側を優先し、クラウドに存在しない端末内データだけ安全に追加する。
+    // 同じIDの端末内データは自動上書きせず、直前バックアップを端末に残す。
+    const localLessons = lessons.slice();
+    const localIssues = directIssues.slice();
+    const localNotes = generalNotes.slice();
+
+    lessons = await mergeLocalIntoCloud(lessonsCollection, localLessons, lessonSnap);
+    directIssues = await mergeLocalIntoCloud(directIssuesCollection, localIssues, issueSnap);
+    generalNotes = await mergeLocalIntoCloud(generalNotesCollection, localNotes, noteSnap);
+
+    recoveredFromDevice = true;
+    saveLocalRecovery();
+    cloudSyncEnabled = true;
+
+    subscribeToFirestore();
+    subscribeToDirectIssues();
+    subscribeToGeneralNotes();
+    render();
+    return true;
+  }catch(e){
+    console.error('cloud sync start failed', e);
+    cloudSyncEnabled = false;
+    return false;
+  }finally{
+    cloudSyncStarting = false;
+  }
+}
+
+function setupCloudLogin(){
+  const overlay = document.getElementById('secureLoginOverlay');
+  const emailEl = document.getElementById('secureEmail');
+  const passwordEl = document.getElementById('securePassword');
+  const btn = document.getElementById('secureLoginBtn');
+  const err = document.getElementById('secureLoginError');
+  const syncRequested = new URLSearchParams(location.search).get('sync') === '1';
+
+  const showLogin = () => { if(overlay) overlay.style.display = 'flex'; };
+  const hideLogin = () => { if(overlay) overlay.style.display = 'none'; };
+
+  auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
+
+  auth.onAuthStateChanged(async user=>{
+    if(user && !user.isAnonymous){
+      const ok = await startCloudSync(user);
+      if(ok){
+        hideLogin();
+        if(syncRequested){
+          history.replaceState(null, '', location.pathname);
+          showToast('クラウド同期を開始しました');
+        }
+      }else{
+        if(syncRequested){
+          showLogin();
+          if(err) err.textContent = '同期設定がまだ完了していません。端末内データはそのまま使えます。';
+        }else{
+          hideLogin();
+        }
+      }
+      return;
+    }
+
+    if(user && user.isAnonymous){
+      try{ await auth.signOut(); }catch(_){}
+    }
+    if(syncRequested) showLogin(); else hideLogin();
+  });
+
+  if(btn && !btn.dataset.bound){
+    btn.dataset.bound = '1';
+    const doLogin = async()=>{
+      const email = (emailEl?.value || '').trim();
+      const password = passwordEl?.value || '';
+      if(!email || !password){
+        if(err) err.textContent = 'メールアドレスとパスワードを入力してください。';
+        return;
+      }
+      btn.disabled = true;
+      if(err) err.textContent = '';
+      try{
+        const cred = await auth.signInWithEmailAndPassword(email, password);
+        if(cred.user?.isAnonymous){
+          await auth.signOut();
+          throw new Error('anonymous-not-allowed');
+        }
+      }catch(e){
+        console.error(e);
+        if(err) err.textContent = 'ログインできませんでした。入力内容をご確認ください。';
+      }finally{
+        btn.disabled = false;
+      }
+    };
+    btn.addEventListener('click', doLogin);
+    passwordEl?.addEventListener('keydown', e=>{ if(e.key === 'Enter') doLogin(); });
+  }
+}
+
 
 function saveLocalRecovery(){
   try{
@@ -917,15 +1046,14 @@ function showToast(msg){
 }
 
 async function loadState(){
-  // Firestore は安全確認のため閉じたまま。今はこの端末だけで安全に使う。
+  // まず端末内の復旧データを表示。クラウドが使えない場合もここは失わない。
   loadLocalRecovery();
   await loadFirestoreCache();
-
-  const overlay = document.getElementById('secureLoginOverlay');
-  if(overlay) overlay.style.display = 'none';
-
   if(recoveredFromDevice) saveLocalRecovery();
   render();
+
+  // 既に本人ログイン済みなら自動同期。未ログイン時は通常画面のまま使える。
+  setupCloudLogin();
 }
 
 // アプリを初めて開いた時（データが1件もない時）だけ、サンプルのレッスンを2件登録します。
@@ -993,6 +1121,16 @@ async function persistNote(noteId){
   if(!n) return;
   recoveredFromDevice = true;
   saveLocalRecovery();
+  if(!cloudSyncEnabled) return;
+  try{
+    await generalNotesCollection.doc(noteId).set({
+      ...cloudPayload(n),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  }catch(e){
+    console.error(e);
+    showToast('端末には保存済みです');
+  }
 }
 
 async function persist(lessonId){
@@ -1001,6 +1139,16 @@ async function persist(lessonId){
   if(!l) return;
   recoveredFromDevice = true;
   saveLocalRecovery();
+  if(!cloudSyncEnabled) return;
+  try{
+    await lessonsCollection.doc(lessonId).set({
+      ...cloudPayload(l),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  }catch(e){
+    console.error(e);
+    showToast('端末には保存済みです');
+  }
 }
 
 
@@ -1503,6 +1651,14 @@ async function saveDirectIssue(){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
+  if(cloudSyncEnabled){
+    try{
+      await ref.set({
+        date, numero, text, resolved:false,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge:true });
+    }catch(e){ console.error(e); }
+  }
   closeDirectIssueModal();
   showToast('課題を保存しました');
 }
@@ -1514,6 +1670,10 @@ async function toggleDirectIssue(issueId){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
+  if(cloudSyncEnabled){
+    try{ await directIssuesCollection.doc(issueId).update({ resolved: issue.resolved, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }); }
+    catch(e){ console.error(e); }
+  }
   showToast(issue.resolved ? '課題を解決済みにしました' : '未解決に戻しました');
 }
 
@@ -1522,6 +1682,10 @@ async function deleteDirectIssue(issueId){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
+  if(cloudSyncEnabled){
+    try{ await directIssuesCollection.doc(issueId).delete(); }
+    catch(e){ console.error(e); }
+  }
   showToast('削除しました');
 }
 
@@ -1586,6 +1750,10 @@ async function deleteLesson(id){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
+  if(cloudSyncEnabled){
+    try{ await lessonsCollection.doc(id).delete(); }
+    catch(e){ console.error(e); }
+  }
   if(expandedId===id) expandedId = null;
   showToast('削除しました');
 }
@@ -1642,6 +1810,10 @@ async function deleteNote(id){
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
+  if(cloudSyncEnabled){
+    try{ await generalNotesCollection.doc(id).delete(); }
+    catch(e){ console.error(e); }
+  }
   showToast('削除しました');
 }
 
