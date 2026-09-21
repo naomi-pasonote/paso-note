@@ -7,51 +7,35 @@ service cloud.firestore {
         && request.auth.token.firebase.sign_in_provider == 'password';
     }
 
-    function hasOwnerMarker() {
-      return isPasswordUser()
-        && (
-          exists(/databases/$(database)/documents/users/$(request.auth.uid))
-          || exists(/databases/$(database)/documents/users/$(request.auth.uid)/settings/main)
-        );
-    }
-
-    function isOwner() {
-      return hasOwnerMarker();
-    }
-
-    // おでかけ安心: 本人UID配下だけ。新規アカウントはowner markerを作れない。
+    // 「おでかけ安心」と「Paso Note」は、ログインした本人UIDの配下だけを使う。
+    // 別アカウントは他人のUID配下を読めず、書けない。
     match /users/{userId} {
-      allow read, update: if isOwner() && request.auth.uid == userId;
-      allow create, delete: if false;
+      allow read, write: if isPasswordUser() && request.auth.uid == userId;
 
       match /{document=**} {
-        allow read, write: if isOwner() && request.auth.uid == userId;
+        allow read, write: if isPasswordUser() && request.auth.uid == userId;
       }
     }
 
-    // Paso Note: 本人だけが既存の共通コレクションを利用できる。
+    // 旧Paso Noteの共通コレクションは復旧用データとして残すが、
+    // 公開・通常アクセスはしない。新しい同期先は users/{uid}/... 配下。
     match /flamencoLessons/{docId} {
-      allow read, write: if isOwner();
+      allow read, write: if false;
     }
-
     match /flamencoGeneralNotes/{docId} {
-      allow read, write: if isOwner();
+      allow read, write: if false;
     }
-
     match /flamencoDirectIssues/{docId} {
-      allow read, write: if isOwner();
+      allow read, write: if false;
     }
-
     match /flamencoMeta/{docId} {
-      allow read, write: if isOwner();
+      allow read, write: if false;
     }
-
-    // 旧データ互換用。
     match /flamencoNote/{docId} {
-      allow read, write: if isOwner();
+      allow read, write: if false;
     }
 
-    // 上記以外はすべて拒否。
+    // 上記以外もすべて拒否。
     match /{document=**} {
       allow read, write: if false;
     }
