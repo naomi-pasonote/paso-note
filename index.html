@@ -563,14 +563,18 @@
 <div id="secureLoginOverlay" style="position:fixed;inset:0;z-index:99999;background:#fffaf7;display:none;align-items:center;justify-content:center;padding:24px;">
   <div style="width:min(420px,100%);background:white;border-radius:18px;padding:28px;box-shadow:0 12px 36px rgba(0,0,0,.12);border:1px solid #eadfd8;">
     <h2 style="margin:0 0 8px;text-align:center;color:#432f2a;">Paso Note</h2>
-    <p style="margin:0 0 22px;text-align:center;color:#6f625d;font-size:14px;">本人専用ログイン</p>
+    <p style="margin:0 0 22px;text-align:center;color:#6f625d;font-size:14px;">「おでかけ安心」と同じメールアドレス・パスワードで同期します。</p>
     <label style="display:block;font-size:13px;margin:0 0 6px;color:#574943;">メールアドレス</label>
     <input id="secureEmail" type="email" autocomplete="email" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #cfc3bd;border-radius:10px;margin-bottom:14px;font-size:16px;">
     <label style="display:block;font-size:13px;margin:0 0 6px;color:#574943;">パスワード</label>
     <input id="securePassword" type="password" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #cfc3bd;border-radius:10px;margin-bottom:16px;font-size:16px;">
-    <button id="secureLoginBtn" type="button" style="width:100%;padding:12px;border:0;border-radius:10px;background:#b2385b;color:white;font-weight:700;font-size:16px;">ログイン</button>
+    <button id="secureLoginBtn" type="button" style="width:100%;padding:12px;border:0;border-radius:10px;background:#b2385b;color:white;font-weight:700;font-size:16px;">ログインして同期</button>
+    <div style="display:flex;justify-content:center;gap:10px;margin-top:10px;flex-wrap:wrap;">
+      <button id="secureResetBtn" type="button" style="border:0;background:transparent;color:#7a1f2b;text-decoration:underline;cursor:pointer;">パスワードを忘れた場合</button>
+      <button id="secureCancelBtn" type="button" style="border:0;background:transparent;color:#6f625d;text-decoration:underline;cursor:pointer;">今は同期しない</button>
+    </div>
     <p id="secureLoginError" style="min-height:20px;margin:12px 0 0;color:#b3261e;font-size:13px;text-align:center;"></p>
-    <p style="margin:16px 0 0;color:#756862;font-size:12px;line-height:1.6;text-align:center;">登録機能はありません。本人の既存アカウントだけで利用します。</p>
+    <p style="margin:16px 0 0;color:#756862;font-size:12px;line-height:1.6;text-align:center;">端末内のPaso Noteデータを残したまま、安全にPCとスマホを同じアカウントへ同期します。</p>
   </div>
 </div>
 
@@ -580,6 +584,10 @@
 
 <div class="search-wrap">
   <input id="searchInput" class="search-input" type="text" placeholder="曲名・注意点・日付で検索…">
+</div>
+<div style="max-width:780px;margin:8px auto 0;padding:0 16px;display:flex;justify-content:flex-end;align-items:center;gap:10px;">
+  <span id="cloudSyncStatus" style="font-size:12px;color:#7d716d;">端末保存中</span>
+  <button id="cloudSyncOpenBtn" type="button" onclick="openCloudSyncLogin()" style="border:1px solid #d9c9c2;background:white;border-radius:999px;padding:8px 14px;font-size:13px;color:#7a1f2b;cursor:pointer;">PC・スマホ同期</button>
 </div>
 
 <div class="tabs">
@@ -674,7 +682,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script>
-// PASO_NOTE_SYNC_READY_V11: local-first recovery + owner-auth cloud sync; no anonymous sign-in
+// PASO_NOTE_UID_SYNC_V12: local-first recovery + UID-scoped cloud sync shared with Odekake auth
 /* ==============================
    Firebase 設定
    ここに Firebase コンソールで取得した設定値を入れます。
@@ -716,6 +724,24 @@ const LOCAL_RECOVERY_BACKUP_KEY = 'pasoNoteDeviceRecoveryBackupV1';
 let recoveredFromDevice = false;
 let cloudSyncEnabled = false;
 let cloudSyncStarting = false;
+let cloudLessonsCollection = null;
+let cloudDirectIssuesCollection = null;
+let cloudGeneralNotesCollection = null;
+
+function setCloudCollections(uid){
+  const userRoot = db.collection('users').doc(uid);
+  cloudLessonsCollection = userRoot.collection('pasoLessons');
+  cloudDirectIssuesCollection = userRoot.collection('pasoDirectIssues');
+  cloudGeneralNotesCollection = userRoot.collection('pasoGeneralNotes');
+}
+
+function updateCloudSyncUi(){
+  const btn = document.getElementById('cloudSyncOpenBtn');
+  const status = document.getElementById('cloudSyncStatus');
+  if(btn) btn.textContent = cloudSyncEnabled ? '同期中' : 'PC・スマホ同期';
+  if(status) status.textContent = cloudSyncEnabled ? 'クラウド同期中' : '端末保存中';
+}
+
 
 function cloudPayload(item){
   const { id, updatedAt, createdAt, ...data } = item || {};
@@ -741,25 +767,29 @@ async function startCloudSync(user){
   if(!user || user.isAnonymous || cloudSyncEnabled || cloudSyncStarting) return false;
   cloudSyncStarting = true;
   try{
+    setCloudCollections(user.uid);
+
     const [lessonSnap, issueSnap, noteSnap] = await Promise.all([
-      lessonsCollection.get(),
-      directIssuesCollection.get(),
-      generalNotesCollection.get()
+      cloudLessonsCollection.get(),
+      cloudDirectIssuesCollection.get(),
+      cloudGeneralNotesCollection.get()
     ]);
 
-    // クラウド側を優先し、クラウドに存在しない端末内データだけ安全に追加する。
-    // 同じIDの端末内データは自動上書きせず、直前バックアップを端末に残す。
+    // クラウド側を優先し、クラウドに存在しない端末内データだけ追加する。
+    // 端末データを先にバックアップしてから同期するため、復旧中の記録を失わない。
     const localLessons = lessons.slice();
     const localIssues = directIssues.slice();
     const localNotes = generalNotes.slice();
+    saveLocalRecovery();
 
-    lessons = await mergeLocalIntoCloud(lessonsCollection, localLessons, lessonSnap);
-    directIssues = await mergeLocalIntoCloud(directIssuesCollection, localIssues, issueSnap);
-    generalNotes = await mergeLocalIntoCloud(generalNotesCollection, localNotes, noteSnap);
+    lessons = await mergeLocalIntoCloud(cloudLessonsCollection, localLessons, lessonSnap);
+    directIssues = await mergeLocalIntoCloud(cloudDirectIssuesCollection, localIssues, issueSnap);
+    generalNotes = await mergeLocalIntoCloud(cloudGeneralNotesCollection, localNotes, noteSnap);
 
     recoveredFromDevice = true;
     saveLocalRecovery();
     cloudSyncEnabled = true;
+    updateCloudSyncUi();
 
     subscribeToFirestore();
     subscribeToDirectIssues();
@@ -769,6 +799,7 @@ async function startCloudSync(user){
   }catch(e){
     console.error('cloud sync start failed', e);
     cloudSyncEnabled = false;
+    updateCloudSyncUi();
     return false;
   }finally{
     cloudSyncStarting = false;
@@ -780,11 +811,26 @@ function setupCloudLogin(){
   const emailEl = document.getElementById('secureEmail');
   const passwordEl = document.getElementById('securePassword');
   const btn = document.getElementById('secureLoginBtn');
+  const resetBtn = document.getElementById('secureResetBtn');
+  const cancelBtn = document.getElementById('secureCancelBtn');
   const err = document.getElementById('secureLoginError');
   const syncRequested = new URLSearchParams(location.search).get('sync') === '1';
 
   const showLogin = () => { if(overlay) overlay.style.display = 'flex'; };
   const hideLogin = () => { if(overlay) overlay.style.display = 'none'; };
+
+  window.openCloudSyncLogin = async()=>{
+    if(auth.currentUser && !auth.currentUser.isAnonymous){
+      const ok = await startCloudSync(auth.currentUser);
+      if(ok){
+        hideLogin();
+        showToast('PC・スマホ同期を開始しました');
+        return;
+      }
+    }
+    if(err) err.textContent = '';
+    showLogin();
+  };
 
   auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
 
@@ -795,15 +841,11 @@ function setupCloudLogin(){
         hideLogin();
         if(syncRequested){
           history.replaceState(null, '', location.pathname);
-          showToast('クラウド同期を開始しました');
+          showToast('PC・スマホ同期を開始しました');
         }
-      }else{
-        if(syncRequested){
-          showLogin();
-          if(err) err.textContent = '同期設定がまだ完了していません。端末内データはそのまま使えます。';
-        }else{
-          hideLogin();
-        }
+      }else if(syncRequested){
+        showLogin();
+        if(err) err.textContent = '同期設定の反映待ちです。端末内データはそのまま残っています。';
       }
       return;
     }
@@ -831,9 +873,11 @@ function setupCloudLogin(){
           await auth.signOut();
           throw new Error('anonymous-not-allowed');
         }
+        const ok = await startCloudSync(cred.user);
+        if(!ok && err) err.textContent = 'ログインはできましたが、同期設定の反映待ちです。端末内データは安全に残っています。';
       }catch(e){
         console.error(e);
-        if(err) err.textContent = 'ログインできませんでした。入力内容をご確認ください。';
+        if(err) err.textContent = 'ログインできませんでした。「おでかけ安心」と同じメールアドレス・パスワードをご確認ください。';
       }finally{
         btn.disabled = false;
       }
@@ -841,8 +885,38 @@ function setupCloudLogin(){
     btn.addEventListener('click', doLogin);
     passwordEl?.addEventListener('keydown', e=>{ if(e.key === 'Enter') doLogin(); });
   }
-}
 
+  if(resetBtn && !resetBtn.dataset.bound){
+    resetBtn.dataset.bound = '1';
+    resetBtn.addEventListener('click', async()=>{
+      const email = (emailEl?.value || '').trim();
+      if(!email){
+        if(err) err.textContent = '先にメールアドレスを入力してください。';
+        return;
+      }
+      try{
+        await auth.sendPasswordResetEmail(email);
+        if(err){
+          err.style.color = '#356b4c';
+          err.textContent = 'パスワード再設定メールを送りました。';
+        }
+      }catch(e){
+        console.error(e);
+        if(err){
+          err.style.color = '#b3261e';
+          err.textContent = '再設定メールを送れませんでした。メールアドレスをご確認ください。';
+        }
+      }
+    });
+  }
+
+  if(cancelBtn && !cancelBtn.dataset.bound){
+    cancelBtn.dataset.bound = '1';
+    cancelBtn.addEventListener('click', hideLogin);
+  }
+
+  updateCloudSyncUi();
+}
 
 function saveLocalRecovery(){
   try{
@@ -1081,7 +1155,8 @@ async function ensureSeedDataIfNeeded(){
 
 function subscribeToFirestore(){
   if(unsubscribeSnapshot) unsubscribeSnapshot();
-  unsubscribeSnapshot = lessonsCollection.onSnapshot((snap)=>{
+  if(!cloudLessonsCollection) return;
+  unsubscribeSnapshot = cloudLessonsCollection.onSnapshot((snap)=>{
     lessons = snap.docs.map(doc=> ({ id: doc.id, ...doc.data() }));
     recoveredFromDevice = true;
     saveLocalRecovery();
@@ -1093,7 +1168,8 @@ function subscribeToFirestore(){
 }
 function subscribeToDirectIssues(){
   if(unsubscribeDirectIssuesSnapshot) unsubscribeDirectIssuesSnapshot();
-  unsubscribeDirectIssuesSnapshot = directIssuesCollection.onSnapshot((snap)=>{
+  if(!cloudDirectIssuesCollection) return;
+  unsubscribeDirectIssuesSnapshot = cloudDirectIssuesCollection.onSnapshot((snap)=>{
     directIssues = snap.docs.map(doc=> ({ id: doc.id, ...doc.data() }));
     recoveredFromDevice = true;
     saveLocalRecovery();
@@ -1106,7 +1182,8 @@ function subscribeToDirectIssues(){
 // 「フラメンコ全体メモ」のリアルタイム購読（レッスンとは別のコレクション）
 function subscribeToGeneralNotes(){
   if(unsubscribeNotesSnapshot) unsubscribeNotesSnapshot();
-  unsubscribeNotesSnapshot = generalNotesCollection.onSnapshot((snap)=>{
+  if(!cloudGeneralNotesCollection) return;
+  unsubscribeNotesSnapshot = cloudGeneralNotesCollection.onSnapshot((snap)=>{
     generalNotes = snap.docs.map(doc=> ({ id: doc.id, ...doc.data() }));
     recoveredFromDevice = true;
     saveLocalRecovery();
@@ -1126,7 +1203,7 @@ async function persistNote(noteId){
   saveLocalRecovery();
   if(!cloudSyncEnabled) return;
   try{
-    await generalNotesCollection.doc(noteId).set({
+    await cloudGeneralNotesCollection.doc(noteId).set({
       ...cloudPayload(n),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
@@ -1144,7 +1221,7 @@ async function persist(lessonId){
   saveLocalRecovery();
   if(!cloudSyncEnabled) return;
   try{
-    await lessonsCollection.doc(lessonId).set({
+    await cloudLessonsCollection.doc(lessonId).set({
       ...cloudPayload(l),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
@@ -1648,15 +1725,15 @@ async function saveDirectIssue(){
     return;
   }
 
-  const ref = directIssuesCollection.doc();
-  const localItem = { id: ref.id, date, numero, text, resolved:false };
+  const localId = uid();
+  const localItem = { id: localId, date, numero, text, resolved:false };
   directIssues.push(localItem);
   saveLocalRecovery();
   recoveredFromDevice = true;
   render();
   if(cloudSyncEnabled){
     try{
-      await ref.set({
+      await cloudDirectIssuesCollection.doc(localId).set({
         date, numero, text, resolved:false,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       }, { merge:true });
@@ -1674,7 +1751,7 @@ async function toggleDirectIssue(issueId){
   recoveredFromDevice = true;
   render();
   if(cloudSyncEnabled){
-    try{ await directIssuesCollection.doc(issueId).update({ resolved: issue.resolved, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }); }
+    try{ await cloudDirectIssuesCollection.doc(issueId).update({ resolved: issue.resolved, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }); }
     catch(e){ console.error(e); }
   }
   showToast(issue.resolved ? '課題を解決済みにしました' : '未解決に戻しました');
@@ -1686,7 +1763,7 @@ async function deleteDirectIssue(issueId){
   recoveredFromDevice = true;
   render();
   if(cloudSyncEnabled){
-    try{ await directIssuesCollection.doc(issueId).delete(); }
+    try{ await cloudDirectIssuesCollection.doc(issueId).delete(); }
     catch(e){ console.error(e); }
   }
   showToast('削除しました');
@@ -1754,7 +1831,7 @@ async function deleteLesson(id){
   recoveredFromDevice = true;
   render();
   if(cloudSyncEnabled){
-    try{ await lessonsCollection.doc(id).delete(); }
+    try{ await cloudLessonsCollection.doc(id).delete(); }
     catch(e){ console.error(e); }
   }
   if(expandedId===id) expandedId = null;
@@ -1814,7 +1891,7 @@ async function deleteNote(id){
   recoveredFromDevice = true;
   render();
   if(cloudSyncEnabled){
-    try{ await generalNotesCollection.doc(id).delete(); }
+    try{ await cloudGeneralNotesCollection.doc(id).delete(); }
     catch(e){ console.error(e); }
   }
   showToast('削除しました');
