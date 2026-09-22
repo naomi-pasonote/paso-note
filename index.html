@@ -682,7 +682,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script>
-// PASO_NOTE_UID_SYNC_V12: local-first recovery + UID-scoped cloud sync shared with Odekake auth
+// PASO_NOTE_UID_SYNC_V13: fix iPhone double-login sync race; local-first UID-scoped cloud sync
 /* ==============================
    Firebase 設定
    ここに Firebase コンソールで取得した設定値を入れます。
@@ -724,6 +724,7 @@ const LOCAL_RECOVERY_BACKUP_KEY = 'pasoNoteDeviceRecoveryBackupV1';
 let recoveredFromDevice = false;
 let cloudSyncEnabled = false;
 let cloudSyncStarting = false;
+let cloudSyncPromise = null;
 let cloudLessonsCollection = null;
 let cloudDirectIssuesCollection = null;
 let cloudGeneralNotesCollection = null;
@@ -764,8 +765,12 @@ async function mergeLocalIntoCloud(collection, localItems, remoteSnap){
 }
 
 async function startCloudSync(user){
-  if(!user || user.isAnonymous || cloudSyncEnabled || cloudSyncStarting) return false;
+  if(!user || user.isAnonymous) return false;
+  if(cloudSyncEnabled) return true;
+  if(cloudSyncPromise) return await cloudSyncPromise;
+
   cloudSyncStarting = true;
+  cloudSyncPromise = (async()=>{
   try{
     setCloudCollections(user.uid);
 
@@ -803,6 +808,13 @@ async function startCloudSync(user){
     return false;
   }finally{
     cloudSyncStarting = false;
+  }
+  })();
+
+  try{
+    return await cloudSyncPromise;
+  }finally{
+    cloudSyncPromise = null;
   }
 }
 
@@ -873,8 +885,10 @@ function setupCloudLogin(){
           await auth.signOut();
           throw new Error('anonymous-not-allowed');
         }
-        const ok = await startCloudSync(cred.user);
-        if(!ok && err) err.textContent = 'ログインはできましたが、同期設定の反映待ちです。端末内データは安全に残っています。';
+        // signInWithEmailAndPassword の直後は onAuthStateChanged が自動で同期を開始する。
+        // ここでも startCloudSync を呼ぶと iPhone/Safari で二重起動になり、
+        // 片方が「反映待ち」と誤判定することがあるため呼ばない。
+        if(err) err.textContent = 'ログインしました。同期を開始しています…';
       }catch(e){
         console.error(e);
         if(err) err.textContent = 'ログインできませんでした。「おでかけ安心」と同じメールアドレス・パスワードをご確認ください。';
