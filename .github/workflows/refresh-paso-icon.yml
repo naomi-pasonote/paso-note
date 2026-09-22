@@ -42,7 +42,10 @@ jobs:
           index_path.write_text(html, encoding="utf-8")
 
           manifest_path = Path("manifest.json")
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          raw_manifest = manifest_path.read_text(encoding="utf-8").strip()
+          if raw_manifest.endswith("\\n"):
+              raw_manifest = raw_manifest[:-2]
+          manifest = json.loads(raw_manifest)
           manifest["icons"] = [{
               "src": icon_name,
               "sizes": "180x180",
