@@ -9,10 +9,16 @@
   "theme_color": "#8E1838",
   "icons": [
     {
-      "src": "paso-icon-latest-20260922.png",
-      "sizes": "180x180",
+      "src": "icon-192-fullbleed.png?v=2",
+      "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512-fullbleed.png?v=2",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ],
   "id": "/paso-note/"
