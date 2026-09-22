@@ -2,14 +2,14 @@
   "name": "Paso Note",
   "short_name": "Paso Note",
   "description": "フラメンコのレッスン・課題・メモをまとめる稽古ノート",
-  "start_url": "./index.html?app=paso-v3",
+  "start_url": "./index.html?app=paso-icon-20260922e",
   "scope": "./",
   "display": "standalone",
   "background_color": "#fff7f2",
   "theme_color": "#8E1838",
   "icons": [
     {
-      "src": "paso-icon-v3-180.png?v=20260922d",
+      "src": "paso-icon-home-20260922e.png",
       "sizes": "180x180",
       "type": "image/png",
       "purpose": "any"
